@@ -146,9 +146,10 @@ def select_courses():
             exit()
         # Note that only courses in "Active" state are returned
         if config["courses"]:
-            use_previous_input = input(
-                "You have previously selected courses. Would you like to use the courses selected last time? (y/n) "
-            )
+            # use_previous_input = input(
+            #     "You have previously selected courses. Would you like to use the courses selected last time? (y/n) "
+            # )
+            use_previous_input = "y"
             print("")
             if use_previous_input == "y" or use_previous_input == "Y":
                 course_ids.extend(
@@ -280,9 +281,10 @@ def transfer_assignments_to_todoist():
         is_synced = True
 
         for task in todoist_tasks:
+            task_name = f"{course_name}: [{assignment["name"]}]({assignment["html_url"]})"
             # Check if assignment is already added to Todoist with same name and within the same Project
             if (
-                task.content == f"[{assignment['name']}]({assignment['html_url']}) Due"
+                task.content == task_name
                 and task.project_id == project_id
             ):
                 is_added = True
@@ -301,7 +303,7 @@ def transfer_assignments_to_todoist():
                 # Check for existence of task.due first to prevent error
                 if task.due is not None:
                     # Handle case where assignment and task both have due dates but they are different
-                    if assignment["due_at"] != task.due.datetime:
+                    if parser.parse(assignment["due_at"]) != task.due.date:
                         is_synced = False
                         print(
                             f"Updating assignment due date: {course_name}:{assignment['name']} to {str(assignment['due_at'])}"
@@ -364,7 +366,7 @@ def transfer_assignments_to_todoist():
         if not is_added:
             if assignment["submission"]["workflow_state"] == "unsubmitted":
                 print(f"Adding assignment {course_name}: {assignment['name']}")
-                add_new_task(assignment, project_id, section_id, course_name)
+                add_new_task(task_name, assignment, project_id, section_id)
                 new_added += 1
                 request_count += 1
         # Update count of updated assignments (updated due date - already updated in Todoist)
@@ -394,15 +396,11 @@ def transfer_assignments_to_todoist():
 
 # Adds a new task from a Canvas assignment object to Todoist under the
 # project corresponding to project_id
-def add_new_task(assignment, project_id, section_id, course_name):
+def add_new_task(name, assignment, project_id, section_id):
     global limit_reached
     try:
         todoist_api.add_task(
-            content=course_name + ": ["
-            + assignment["name"]
-            + "]("
-            + assignment["html_url"]
-            + ")",
+            content=name,
             project_id=project_id,
             section_id=section_id,
             due_datetime=parser.parse(assignment["due_at"]),
@@ -463,7 +461,7 @@ def canvas_assignment_stats():
 def update_task(assignment, task):
     global limit_reached
     try:
-        todoist_api.update_task(task_id=task.id, due_datetime=assignment["due_at"])
+        todoist_api.update_task(task_id=task.id, due_datetime=parser.parse(assignment["due_at"]))
     except Exception as error:
         print(f"Error while updating task: {error}")
         limit_reached = True
