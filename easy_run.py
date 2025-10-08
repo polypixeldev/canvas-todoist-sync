@@ -4,10 +4,10 @@ import requests
 import re
 import json
 from todoist_api_python.api import TodoistAPI
-from requests.auth import HTTPDigestAuth
 from datetime import datetime, timezone, timedelta
 import time
 from random import randint
+from dateutil import parser
 
 # Load configuration files and creates a list of course_ids
 config = {}
@@ -18,11 +18,13 @@ assignments = []
 todoist_tasks = []
 courses_id_name_dict = {}
 todoist_project_dict = {}
+todoist_section_dict = {}
 throttle_number = 50  # Number of requests to make before sleeping for delay seconds
 sleep_delay_max = 2500  # Maximum number of milliseconds to sleep for
 max_added = 250  # Maximum number of assignments to add to Todoist at once. Todoist API limit is 450 requests per 15 minutes and you can quickly hit this if adding a massive number of assignments.
 limit_reached = False  # Global var used to terminate early if limit is reached or API returns an error.
 
+SCHOOL_PROJECT_NAME = "📚 School"
 
 def main():
     print(f"  {'#'*52}")
@@ -34,9 +36,11 @@ def main():
     print(f"Selected {len(course_ids)} courses")
     print("Syncing Canvas Assignments...")
     load_todoist_projects()
+    load_todoist_sections()
     load_assignments()
     load_todoist_tasks()
-    create_todoist_projects()
+    # create_todoist_projects()
+    create_todoist_sections()
     transfer_assignments_to_todoist()
     canvas_assignment_stats()
     print("Done!")
@@ -153,7 +157,7 @@ def select_courses():
                 for course in response.json():
                     courses_id_name_dict[course.get("id", None)] = re.sub(
                         r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
-                    )
+                    ).split(" - ")[0]
                 return
     except Exception as error:
         print(f"Error while loading courses: {error}")
@@ -164,7 +168,7 @@ def select_courses():
     for i, course in enumerate(response.json(), start=1):
         courses_id_name_dict[course.get("id", None)] = re.sub(
             r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
-        )
+        ).split(" - ")[0]
         if course.get("name") is not None:
             print(
                 f"{str(i)} ) {courses_id_name_dict[course.get('id', '')]} : {str(course.get('id', ''))}"
@@ -224,28 +228,37 @@ def load_assignments():
 # Loads all user tasks from Todoist
 def load_todoist_tasks():
     tasks = todoist_api.get_tasks()
-    todoist_tasks.extend(tasks)
+    for task_list in tasks:
+      todoist_tasks.extend(task_list)
     print(f"Loaded {len(todoist_tasks)} Todoist Tasks")
 
 
 # Loads all user projects from Todoist
 def load_todoist_projects():
     projects = todoist_api.get_projects()
-    for project in projects:
+    for project_list in projects:
+      for project in project_list:
         todoist_project_dict[project.name] = project.id
     print(f"Loaded {len(todoist_project_dict)} Todoist Projects")
 
+# Loads all user sections in the school project from Todoist
+def load_todoist_sections():
+    sections = todoist_api.get_sections(todoist_project_dict[SCHOOL_PROJECT_NAME])
+    for section_list in sections:
+      for section in section_list:
+        todoist_section_dict[section.name] = section.id
+    print(f"Loaded {len(todoist_project_dict)} Todoist Sections")
 
-# Checks to see if the user has a project matching their course names, if there
-# is not a new project will be created
-def create_todoist_projects():
+# Checks to see if the user has a section matching their course names, if there
+# is not a new section will be created
+def create_todoist_sections():
     for course_id in course_ids:
-        if courses_id_name_dict[course_id] not in todoist_project_dict:
-            project = todoist_api.add_project(courses_id_name_dict[course_id])
-            print(f"Project {courses_id_name_dict[course_id]} created")
-            todoist_project_dict[project.name] = project.id
+        if courses_id_name_dict[course_id] not in todoist_section_dict:
+            section = todoist_api.add_section(courses_id_name_dict[course_id], todoist_project_dict[SCHOOL_PROJECT_NAME])
+            print(f"Section {courses_id_name_dict[course_id]} created")
+            todoist_section_dict[section.name] = section.id
         else:
-            print(f"Project {courses_id_name_dict[course_id]} exists")
+            print(f"Section {courses_id_name_dict[course_id]} exists")
 
 
 # Transfers over assignments from canvas over to Todoist, the method Checks
@@ -260,7 +273,8 @@ def transfer_assignments_to_todoist():
     request_count = 0
     for assignment in assignments:
         course_name = courses_id_name_dict[assignment["course_id"]]
-        project_id = todoist_project_dict[course_name]
+        project_id = todoist_project_dict[SCHOOL_PROJECT_NAME]
+        section_id = todoist_section_dict[course_name]
 
         is_added = False
         is_synced = True
@@ -350,7 +364,7 @@ def transfer_assignments_to_todoist():
         if not is_added:
             if assignment["submission"]["workflow_state"] == "unsubmitted":
                 print(f"Adding assignment {course_name}: {assignment['name']}")
-                add_new_task(assignment, project_id)
+                add_new_task(assignment, project_id, section_id, course_name)
                 new_added += 1
                 request_count += 1
         # Update count of updated assignments (updated due date - already updated in Todoist)
@@ -380,18 +394,18 @@ def transfer_assignments_to_todoist():
 
 # Adds a new task from a Canvas assignment object to Todoist under the
 # project corresponding to project_id
-def add_new_task(assignment, project_id):
+def add_new_task(assignment, project_id, section_id, course_name):
     global limit_reached
     try:
         todoist_api.add_task(
-            content="["
+            content=course_name + ": ["
             + assignment["name"]
             + "]("
             + assignment["html_url"]
-            + ")"
-            + " Due",
+            + ")",
             project_id=project_id,
-            due_datetime=assignment["due_at"],
+            section_id=section_id,
+            due_datetime=parser.parse(assignment["due_at"]),
             labels=config["todoist_task_labels"],
             priority=config["todoist_task_priority"],
         )
