@@ -403,7 +403,7 @@ def add_new_task(name, assignment, project_id, section_id):
             content=name,
             project_id=project_id,
             section_id=section_id,
-            due_datetime=parser.parse(assignment["due_at"]),
+            due_datetime=parser.parse(assignment["due_at"]) if assignment["due_at"] != None else None,
             labels=config["todoist_task_labels"],
             priority=config["todoist_task_priority"],
         )
