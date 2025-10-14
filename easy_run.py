@@ -341,7 +341,7 @@ def transfer_assignments_to_todoist():
             if (
                 assignment["unlock_at"] is not None
                 and config["sync_locked_assignments"] == False
-                and assignment["unlock_at"]
+                and parser.parse(assignment["unlock_at"])
                 > (datetime.now() + timedelta(days=3)).isoformat()
             ):
                 print(
@@ -364,7 +364,9 @@ def transfer_assignments_to_todoist():
                 break
         # Add assignment to Todoist if not already added - Ignore assignments that are already submitted
         if not is_added:
-            if assignment["submission"]["workflow_state"] == "unsubmitted":
+            submitted = assignment["submission"]["workflow_state"] == "unsubmitted"
+            past_due = parser.parse(assignment["due_at"]) < datetime.now() if assignment["due_at"] else False
+            if (not submitted) and (not past_due):
                 print(f"Adding assignment {course_name}: {assignment['name']}")
                 add_new_task(task_name, assignment, project_id, section_id)
                 new_added += 1
