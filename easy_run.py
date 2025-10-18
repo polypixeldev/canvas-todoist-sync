@@ -11,12 +11,14 @@ from dateutil import parser
 
 # Load configuration files and creates a list of course_ids
 config = {}
-header = {}
+canvas_accounts = []
+canvas_headers = []
+canvas_header = {}
 param = {"per_page": "100", "include": "submission", "enrollment_state": "active"}
-course_ids = []
+course_ids_by_account = []
 assignments = []
 todoist_tasks = []
-courses_id_name_dict = {}
+courses_id_name_dict_by_account = []
 todoist_project_dict = {}
 todoist_section_dict = {}
 throttle_number = 50  # Number of requests to make before sleeping for delay seconds
@@ -33,7 +35,10 @@ def main():
     initialize_api()
     print("API INITIALIZED")
     select_courses()
-    print(f"Selected {len(course_ids)} courses")
+    total_ids = 0
+    for id_list in course_ids_by_account:
+      total_ids += len(id_list)
+    print(f"Selected {total_ids} courses")
     print("Syncing Canvas Assignments...")
     load_todoist_projects()
     load_todoist_sections()
@@ -58,6 +63,7 @@ def yes_no(question: str) -> bool:
 def initialize_api():
     global config
     global todoist_api
+    global canvas_accounts
 
     try:
         with open("config.json") as config_file:
@@ -68,7 +74,7 @@ def initialize_api():
 
     # create todoist_api object globally
     todoist_api = TodoistAPI(config["todoist_api_key"].strip())
-    header.update({"Authorization": f"Bearer {config['canvas_api_key'].strip()}"})
+    canvas_accounts = config['canvas_accounts']
 
 
 def initial_config():  # Initial configuration for first time users
@@ -76,27 +82,34 @@ def initial_config():  # Initial configuration for first time users
         "Your Todoist API key has not been configured. To add an API token, go to your Todoist settings and copy the API token listed under the Integrations Tab. Copy the token and paste below when you are done."
     )
     config["todoist_api_key"] = input(">")
-    print(
-        "Your Canvas API key has not been configured. To add an API token, go to your Canvas settings and click on New Access Token under Approved Integrations. Copy the token and paste below when you are done."
-    )
-    config["canvas_api_key"] = input(">")
+    continue_adding = True
+    accounts = []
+    while continue_adding:
+      print(f"Adding Canvas account {len(accounts)}")
+      print(f"Canvas account {len(accounts)} API key - To add an API key, go to your Canvas settings and click on New Access Token under Approved Integrations. Copy the token and paste below when you are done.")
+      account = { "key": input(">") }
+
+      use_custom_url = not yes_no("Use default Canvas URL? (https://canvas.instructure.com)")
+      if use_custom_url:
+          print(
+              "Enter your custom Canvas URL: (example https://university.instructure.com)"
+          )
+          account["url"] = input(">")
+      else:
+          account["url"] = "https://canvas.instructure.com"
+
+      accounts.append(account)
+
+      continue_adding = yes_no("Add another Canvas account?")
+
     defaults = yes_no("Use default options? (enter n for advanced config)")
     if defaults == True:
-        config["canvas_api_heading"] = "https://canvas.instructure.com"
         config["todoist_task_priority"] = 1
         config["todoist_task_labels"] = []
         config["sync_null_assignments"] = True
         config["sync_locked_assignments"] = True
         config["sync_no_due_date_assignments"] = True
     if defaults == False:
-        custom_url = yes_no("Use default Canvas URL? (https://canvas.instructure.com)")
-        if custom_url == True:
-            config["canvas_api_heading"] = "https://canvas.instructure.com"
-        if custom_url == False:
-            print(
-                "Enter your custom Canvas URL: (example https://university.instructure.com)"
-            )
-            config["canvas_api_heading"] = input(">")
         advance_setup = yes_no(
             "Configure Advanced Options (change priority, labels, or sync null/locked assignments?) (enter n for default config)"
         )
@@ -123,7 +136,7 @@ def initial_config():  # Initial configuration for first time users
             config["sync_null_assignments"] = True
             config["sync_locked_assignments"] = True
             config["sync_no_due_date_assignments"] = True
-    config["courses"] = []
+    config["canvas_accounts"] = accounts
     with open("config.json", "w") as outfile:
         json.dump(config, outfile)
 
@@ -134,74 +147,70 @@ def initial_config():  # Initial configuration for first time users
 
 def select_courses():
     global config
+    global canvas_accounts
 
-    try:
-        response = requests.get(
-            f"{config['canvas_api_heading']}/api/v1/courses",
-            headers=header,
-            params=param,
-        )
-        if response.status_code == 401:
-            print("Unauthorized; Check API Key")
-            exit()
-        # Note that only courses in "Active" state are returned
-        if config["courses"]:
-            # use_previous_input = input(
-            #     "You have previously selected courses. Would you like to use the courses selected last time? (y/n) "
-            # )
-            use_previous_input = "y"
-            print("")
-            if use_previous_input == "y" or use_previous_input == "Y":
-                course_ids.extend(
-                    list(map(lambda course_id: int(course_id), config["courses"]))
-                )
-                for course in response.json():
-                    courses_id_name_dict[course.get("id", None)] = re.sub(
-                        r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
-                    ).split(" - ")[0]
-                return
-    except Exception as error:
-        print(f"Error while loading courses: {error}")
-        print(f"Check API Key and Canvas URL")
-        exit()
+    for id, account in enumerate(canvas_accounts):
+      try:
+          response = requests.get(
+              f"{account["url"]}/api/v1/courses",
+              headers={"Authorization": f"Bearer {account["key"]}"},
+              params=param,
+          )
+          if response.status_code == 401:
+              print("Unauthorized; Check API Key")
+              exit()
+          # Note that only courses in "Active" state are returned
+          if "courses" in account:
+            course_ids_by_account.append(list(map(lambda course_id: int(course_id), account["courses"])))
+            courses_id_name_dict_by_account.append({})
+            for course in response.json():
+                courses_id_name_dict_by_account[id][course.get("id", None)] = re.sub(
+                    r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
+                ).split(" - ")[0]
+            continue
+      except Exception as error:
+          print(f"Error while loading courses: {error}")
+          print(f"Check API Key and Canvas URL")
+          exit()
 
-    # If the user does not choose to use courses selected last time
-    for i, course in enumerate(response.json(), start=1):
-        courses_id_name_dict[course.get("id", None)] = re.sub(
-            r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
-        ).split(" - ")[0]
-        if course.get("name") is not None:
-            print(
-                f"{str(i)} ) {courses_id_name_dict[course.get('id', '')]} : {str(course.get('id', ''))}"
-            )
+      # If the user does not choose to use courses selected last time
+      courses_id_name_dict_by_account.append({})
+      for i, course in enumerate(response.json(), start=1):
+          courses_id_name_dict_by_account[id][course.get("id", None)] = re.sub(
+              r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
+          ).split(" - ")[0]
+          if course.get("name") is not None:
+              print(
+                  f"{str(i)} ) {courses_id_name_dict_by_account[id][course.get('id', '')]} : {str(course.get('id', ''))}"
+              )
 
-    print(
-        "\nEnter the courses you would like to add to Todoist by entering the numbers of the items you would like to select. Separate numbers with spaces."
-    )
-    my_input = input(">")
-    input_array = my_input.split()
-    course_ids.extend(
-        list(
-            map(
-                lambda item: response.json()[int(item) - 1].get("id", None), input_array
-            )
-        )
-    )
+      print(
+          "\nEnter the courses you would like to add to Todoist by entering the numbers of the items you would like to select. Separate numbers with spaces."
+      )
+      my_input = input(">")
+      input_array = my_input.split()
+      course_ids_by_account.append(list(
+          map(
+              lambda item: response.json()[int(item) - 1].get("id", None), input_array
+          )
+        ))
 
-    # write course ids to config.json
-    config["courses"] = course_ids
-    with open("config.json", "w") as outfile:
-        json.dump(config, outfile)
+      # write course ids to config.json
+      config["canvas_accounts"][id]["courses"] = course_ids_by_account[id]
+      with open("config.json", "w") as outfile:
+          json.dump(config, outfile)
 
 
 # Iterates over the course_ids list and loads all of the users assignments
 # for those classes. Appends assignment objects to assignments list
 def load_assignments():
     try:
-        for course_id in course_ids:
+        for id, account_courses in enumerate(course_ids_by_account):
+          for course_id in account_courses:
+            canvas_header = {"Authorization": f"Bearer {canvas_accounts[id]["key"]}"}
             response = requests.get(
-                f"{config['canvas_api_heading']}/api/v1/courses/{str(course_id)}/assignments",
-                headers=header,
+                f"{canvas_accounts[id]["url"]}/api/v1/courses/{str(course_id)}/assignments",
+                headers=canvas_header,
                 params=param,
             )
             if response.status_code == 401:
@@ -211,13 +220,13 @@ def load_assignments():
             while "next" in response.links:
                 sleep()  # Throttle requests to Canvas API to prevent rate limiting on multiple pages
                 response = requests.get(
-                    response.links["next"]["url"], headers=header, params=param
+                    response.links["next"]["url"], headers=canvas_header, params=param
                 )
                 paginated.extend(response.json())
             print(
-                f"Loaded {len(paginated)} Assignments for Course {courses_id_name_dict[course_id]}"
+                f"Loaded {len(paginated)} Assignments for Course {courses_id_name_dict_by_account[id][course_id]}"
             )
-            assignments.extend(paginated)
+            assignments.extend(map(lambda assignment: add_account_id_to_assignment(assignment, id), paginated))
         print(f"Loaded {len(assignments)} Total Canvas Assignments")
         return
     except Exception as error:
@@ -225,6 +234,9 @@ def load_assignments():
         print(f"Check or regenerate API Key and Canvas URL")
         exit()
 
+def add_account_id_to_assignment(assignment, id):
+    assignment["account_id"] = id
+    return assignment
 
 # Loads all user tasks from Todoist
 def load_todoist_tasks():
@@ -253,13 +265,14 @@ def load_todoist_sections():
 # Checks to see if the user has a section matching their course names, if there
 # is not a new section will be created
 def create_todoist_sections():
-    for course_id in course_ids:
-        if courses_id_name_dict[course_id] not in todoist_section_dict:
-            section = todoist_api.add_section(courses_id_name_dict[course_id], todoist_project_dict[SCHOOL_PROJECT_NAME])
-            print(f"Section {courses_id_name_dict[course_id]} created")
+    for id, course_id_list in enumerate(course_ids_by_account):
+      for course_id in course_id_list:
+        if courses_id_name_dict_by_account[id][course_id] not in todoist_section_dict:
+            section = todoist_api.add_section(courses_id_name_dict_by_account[id][course_id], todoist_project_dict[SCHOOL_PROJECT_NAME])
+            print(f"Section {courses_id_name_dict_by_account[id][course_id]} created")
             todoist_section_dict[section.name] = section.id
         else:
-            print(f"Section {courses_id_name_dict[course_id]} exists")
+            print(f"Section {courses_id_name_dict_by_account[id][course_id]} exists")
 
 
 # Transfers over assignments from canvas over to Todoist, the method Checks
@@ -273,7 +286,7 @@ def transfer_assignments_to_todoist():
     global throttle_number
     request_count = 0
     for assignment in assignments:
-        course_name = courses_id_name_dict[assignment["course_id"]]
+        course_name = courses_id_name_dict_by_account[assignment["account_id"]][assignment["course_id"]]
         project_id = todoist_project_dict[SCHOOL_PROJECT_NAME]
         section_id = todoist_section_dict[course_name]
 
