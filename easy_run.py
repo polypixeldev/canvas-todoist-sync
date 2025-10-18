@@ -377,9 +377,9 @@ def transfer_assignments_to_todoist():
                 break
         # Add assignment to Todoist if not already added - Ignore assignments that are already submitted
         if not is_added:
-            submitted = assignment["submission"]["workflow_state"] == "unsubmitted"
+            unsubmitted = assignment["submission"]["workflow_state"] == "unsubmitted"
             past_due = parser.parse(assignment["due_at"]).timestamp() < datetime.now().timestamp() if assignment["due_at"] else False
-            if (not submitted) and (not past_due):
+            if unsubmitted and (not past_due):
                 print(f"Adding assignment {course_name}: {assignment['name']}")
                 add_new_task(task_name, assignment, project_id, section_id)
                 new_added += 1
