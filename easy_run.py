@@ -4,10 +4,12 @@ import requests
 import re
 import json
 from todoist_api_python.api import TodoistAPI
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, date, timezone, timedelta
 import time
 from random import randint
 from dateutil import parser
+from ical.calendar_stream import IcsCalendarStream
+import asyncio
 
 # Load configuration files and creates a list of course_ids
 config = {}
@@ -150,39 +152,71 @@ def select_courses():
     global canvas_accounts
 
     for id, account in enumerate(canvas_accounts):
-      try:
-          response = requests.get(
-              f"{account["url"]}/api/v1/courses",
-              headers={"Authorization": f"Bearer {account["key"]}"},
-              params=param,
-          )
-          if response.status_code == 401:
-              print("Unauthorized; Check API Key")
-              exit()
-          # Note that only courses in "Active" state are returned
-          if "courses" in account:
-            course_ids_by_account.append(list(map(lambda course_id: int(course_id), account["courses"])))
-            courses_id_name_dict_by_account.append({})
-            for course in response.json():
-                courses_id_name_dict_by_account[id][course.get("id", None)] = re.sub(
-                    r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
-                ).split(" - ")[0]
-            continue
-      except Exception as error:
-          print(f"Error while loading courses: {error}")
-          print(f"Check API Key and Canvas URL")
-          exit()
+      select_list = []
 
-      # If the user does not choose to use courses selected last time
-      courses_id_name_dict_by_account.append({})
-      for i, course in enumerate(response.json(), start=1):
-          courses_id_name_dict_by_account[id][course.get("id", None)] = re.sub(
-              r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
-          ).split(" - ")[0]
-          if course.get("name") is not None:
-              print(
-                  f"{str(i)} ) {courses_id_name_dict_by_account[id][course.get('id', '')]} : {str(course.get('id', ''))}"
-              )
+      if account["calendar_url"] != None:
+          course_codes = []
+          cal = asyncio.run(IcsCalendarStream.calendar_from_url(account["calendar_url"]))
+
+          for event in cal.timeline:
+            summary = event.summary
+            code = course_id_from_cal_summary(summary)
+
+            if not (code in course_codes):
+                course_codes.append(code)
+
+          courses_id_name_dict_by_account.append({})
+
+          for i, course_code in enumerate(course_codes):
+              courses_id_name_dict_by_account[id][course_code] = course_code
+              select_list.append({
+                  "id": course_code,
+                  "name": course_code
+              })
+
+          if "courses" in account:
+            course_ids_by_account.append(course_codes)
+            continue
+      else:
+        try:
+            response = requests.get(
+                f"{account["url"]}/api/v1/courses",
+                headers={"Authorization": f"Bearer {account["key"]}"},
+                params=param,
+            )
+            if response.status_code == 401:
+                print("Unauthorized; Check API Key")
+                exit()
+            # Note that only courses in "Active" state are returned
+            if "courses" in account:
+              course_ids_by_account.append(list(map(lambda course_id: int(course_id), account["courses"])))
+              courses_id_name_dict_by_account.append({})
+              for course in response.json():
+                  courses_id_name_dict_by_account[id][course.get("id", None)] = re.sub(
+                      r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
+                  ).split(" - ")[0]
+              continue
+        except Exception as error:
+            print(f"Error while loading courses: {error}")
+            print(f"Check API Key and Canvas URL")
+            exit()
+
+        # If the user does not choose to use courses selected last time
+        courses_id_name_dict_by_account.append({})
+        for i, course in enumerate(response.json(), start=1):
+            courses_id_name_dict_by_account[id][course.get("id", None)] = re.sub(
+                r"[^-a-zA-Z0-9._\s]", "", course.get("name", "")
+            ).split(" - ")[0]
+            if course.get("name") is not None:
+                select_list.append({
+                    "id": str(course.get('id', '')),
+                    "name": courses_id_name_dict_by_account[id][course.get('id', '')]
+                })
+
+      for i, course in enumerate(select_list):
+        print(
+            f"{str(i)} ) {course["id"]} : {course["name"]}"
+        )
 
       print(
           "\nEnter the courses you would like to add to Todoist by entering the numbers of the items you would like to select. Separate numbers with spaces."
@@ -191,7 +225,7 @@ def select_courses():
       input_array = my_input.split()
       course_ids_by_account.append(list(
           map(
-              lambda item: response.json()[int(item) - 1].get("id", None), input_array
+              lambda item: select_list[int(item)]["id"], input_array
           )
         ))
 
@@ -206,33 +240,54 @@ def select_courses():
 def load_assignments():
     try:
         for id, account_courses in enumerate(course_ids_by_account):
-          for course_id in account_courses:
-            canvas_header = {"Authorization": f"Bearer {canvas_accounts[id]["key"]}"}
-            response = requests.get(
-                f"{canvas_accounts[id]["url"]}/api/v1/courses/{str(course_id)}/assignments",
-                headers=canvas_header,
-                params=param,
-            )
-            if response.status_code == 401:
-                print("Unauthorized; Check API Key")
-                exit()
-            paginated = response.json()
-            while "next" in response.links:
-                sleep()  # Throttle requests to Canvas API to prevent rate limiting on multiple pages
-                response = requests.get(
-                    response.links["next"]["url"], headers=canvas_header, params=param
-                )
-                paginated.extend(response.json())
-            print(
-                f"Loaded {len(paginated)} Assignments for Course {courses_id_name_dict_by_account[id][course_id]}"
-            )
-            assignments.extend(map(lambda assignment: add_account_id_to_assignment(assignment, id), paginated))
+          if canvas_accounts[id]["calendar_url"] != None:
+              cal = asyncio.run(IcsCalendarStream.calendar_from_url(canvas_accounts[id]["calendar_url"]))
+
+              cal_assignments = list(filter(lambda event: "assignment" in event.uid, cal.timeline))
+              assignments.extend(map(lambda event: cal_event_to_assignment(event, id), cal_assignments))
+          else:
+            for course_id in account_courses:
+              canvas_header = {"Authorization": f"Bearer {canvas_accounts[id]["key"]}"}
+              response = requests.get(
+                  f"{canvas_accounts[id]["url"]}/api/v1/courses/{str(course_id)}/assignments",
+                  headers=canvas_header,
+                  params=param,
+              )
+              if response.status_code == 401:
+                  print("Unauthorized; Check API Key")
+                  exit()
+              paginated = response.json()
+              while "next" in response.links:
+                  sleep()  # Throttle requests to Canvas API to prevent rate limiting on multiple pages
+                  response = requests.get(
+                      response.links["next"]["url"], headers=canvas_header, params=param
+                  )
+                  paginated.extend(response.json())
+              print(
+                  f"Loaded {len(paginated)} Assignments for Course {courses_id_name_dict_by_account[id][course_id]}"
+              )
+              assignments.extend(map(lambda assignment: add_account_id_to_assignment(assignment, id), paginated))
         print(f"Loaded {len(assignments)} Total Canvas Assignments")
         return
     except Exception as error:
         print(f"Error while loading Assignments: {error}")
         print(f"Check or regenerate API Key and Canvas URL")
         exit()
+
+def course_id_from_cal_summary(summary):
+  code_match = re.search(r"(?<=\[)([A-Z]|\d)+(?=\]$)", summary)
+
+  return code_match.group()
+
+def cal_event_to_assignment(event, account_id):
+    return {
+      "account_id": account_id,
+      "course_id": course_id_from_cal_summary(event.summary),
+      "name": event.summary.split("[")[0],
+      "html_url": event.url,
+      "due_at": event.end,
+
+    }
 
 def add_account_id_to_assignment(assignment, id):
     assignment["account_id"] = id
@@ -316,7 +371,19 @@ def transfer_assignments_to_todoist():
                 # Check for existence of task.due first to prevent error
                 if task.due is not None:
                     # Handle case where assignment and task both have due dates but they are different
-                    if parser.parse(assignment["due_at"]) != task.due.date:
+                    due_datetime = None
+                    if type(assignment["due_at"]) is datetime:
+                      due_datetime = assignment["due_at"]
+                    elif type(assignment["due_at"]) is date:
+                      due_datetime = datetime.combine(assignment["due_at"] - timedelta(days=1), datetime.max.time())
+                    else:
+                      due_datetime = parser.parse(assignment["due_at"])
+
+                    if due_datetime.replace(microsecond=0) != task.due.date:
+                        
+                        print(assignment)
+                        print(due_datetime)
+                        print(task.due)
                         is_synced = False
                         print(
                             f"Updating assignment due date: {course_name}:{assignment['name']} to {str(assignment['due_at'])}"
@@ -326,7 +393,7 @@ def transfer_assignments_to_todoist():
                         break
 
             # Handle case where assignment is not graded
-            if config["sync_null_assignments"] == False:
+            if config["sync_null_assignments"] == False and assignment["submission_types"] != None:
                 ## This is hacky, but it works for now - need to fix this
                 if (
                     assignment["submission_types"][0] == "not_graded"
@@ -352,7 +419,8 @@ def transfer_assignments_to_todoist():
                 break
             # Handle case where assignment is locked and unlock date is more than 2 days in the future
             if (
-                assignment["unlock_at"] is not None
+                "unlock_at" in assignment
+                and assignment["unlock_at"] is not None
                 and config["sync_locked_assignments"] == False
                 and parser.parse(assignment["unlock_at"]).timestamp()
                 > (datetime.now() + timedelta(days=3)).timestamp()
@@ -365,7 +433,8 @@ def transfer_assignments_to_todoist():
                 break
             # Handle case where assignment is locked and unlock date is empty
             if (
-                assignment["locked_for_user"] == True
+                "locked_for_user" in assignment
+                and assignment["locked_for_user"] == True
                 and assignment["unlock_at"] is None
                 and config["sync_locked_assignments"] == False
             ):
@@ -377,8 +446,20 @@ def transfer_assignments_to_todoist():
                 break
         # Add assignment to Todoist if not already added - Ignore assignments that are already submitted
         if not is_added:
-            unsubmitted = assignment["submission"]["workflow_state"] == "unsubmitted"
-            past_due = parser.parse(assignment["due_at"]).timestamp() < datetime.now().timestamp() if assignment["due_at"] else False
+            unsubmitted = (not "submission" in assignment) or assignment["submission"]["workflow_state"] == "unsubmitted"
+            
+            past_due = False
+
+            if assignment["due_at"]:
+              due_datetime = None
+              if type(assignment["due_at"]) is datetime:
+                  due_datetime = assignment["due_at"]
+              elif type(assignment["due_at"]) is date:
+                  due_datetime = datetime.combine(assignment["due_at"] - timedelta(days=1), datetime.min.time())
+              else:
+                  due_datetime = parser.parse(assignment["due_at"])
+              past_due = due_datetime.timestamp() < datetime.now().timestamp() 
+            
             if unsubmitted and (not past_due):
                 print(f"Adding assignment {course_name}: {assignment['name']}")
                 add_new_task(task_name, assignment, project_id, section_id)
@@ -414,11 +495,19 @@ def transfer_assignments_to_todoist():
 def add_new_task(name, assignment, project_id, section_id):
     global limit_reached
     try:
+        assignment_datetime = None
+        if type(assignment["due_at"]) is datetime:
+            assignment_datetime = assignment["due_at"]
+        elif type(assignment["due_at"]) is date:
+            assignment_datetime = datetime.combine(assignment["due_at"] - timedelta(days=1), datetime.max.time())
+        elif assignment["due_at"] != None:
+            assignment_datetime = parser.parse(assignment["due_at"])
+
         todoist_api.add_task(
             content=name,
             project_id=project_id,
             section_id=section_id,
-            due_datetime=parser.parse(assignment["due_at"]) if assignment["due_at"] != None else None,
+            due_datetime=assignment_datetime,
             labels=config["todoist_task_labels"],
             priority=config["todoist_task_priority"],
         )
@@ -440,6 +529,9 @@ def canvas_assignment_stats():
     locked = 0
     instructor_graded = 0
     for assignment in assignments:
+        if not "submission" in assignment:
+            continue
+      
         # Check for assignment graded_at dates, and if graded_at is not None, add to graded_timestamps list to report most recent grade update
         if assignment["submission"]["graded_at"] is not None:
             timestamp = datetime.strptime(
@@ -476,7 +568,15 @@ def canvas_assignment_stats():
 def update_task(assignment, task):
     global limit_reached
     try:
-        todoist_api.update_task(task_id=task.id, due_datetime=parser.parse(assignment["due_at"]))
+        assignment_datetime = None
+        if type(assignment["due_at"]) is datetime:
+            assignment_datetime = assignment["due_at"]
+        elif type(assignment["due_at"]) is date:
+            assignment_datetime = datetime.combine(assignment["due_at"] - timedelta(days=1), datetime.max.time())
+        elif assignment["due_at"] != None:
+            assignment_datetime = parser.parse(assignment["due_at"])
+
+        todoist_api.update_task(task_id=task.id, due_datetime=assignment_datetime)
     except Exception as error:
         print(f"Error while updating task: {error}")
         limit_reached = True
