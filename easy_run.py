@@ -298,6 +298,16 @@ def load_todoist_tasks():
     tasks = todoist_api.get_tasks()
     for task_list in tasks:
       todoist_tasks.extend(task_list)
+
+    completed_tasks = todoist_api.get_completed_tasks_by_completion_date(
+        since=datetime.now() - timedelta(weeks=12),
+        until=datetime.now(),
+        filter_query=f"#{SCHOOL_PROJECT_NAME}"
+    )
+
+    for task_list in completed_tasks:
+      todoist_tasks.extend(task_list)
+
     print(f"Loaded {len(todoist_tasks)} Todoist Tasks")
 
 
