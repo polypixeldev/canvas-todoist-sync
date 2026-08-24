@@ -357,6 +357,9 @@ def transfer_assignments_to_todoist():
     global throttle_number
     request_count = 0
     for assignment in assignments:
+        if assignment["course_id"] == None:
+            continue
+
         course_name = courses_id_name_dict_by_account[assignment["account_id"]][assignment["course_id"]]
         project_id = todoist_project_dict[SCHOOL_PROJECT_NAME]
         section_id = todoist_section_dict[course_name]
