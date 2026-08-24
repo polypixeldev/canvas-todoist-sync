@@ -162,6 +162,9 @@ def select_courses():
             summary = event.summary
             code = course_id_from_cal_summary(summary)
 
+            if code == None:
+                continue
+
             if not (code in course_codes):
                 course_codes.append(code)
 
@@ -277,7 +280,10 @@ def load_assignments():
 def course_id_from_cal_summary(summary):
   code_match = re.search(r"(?<=\[)([A-Z]|\d)+(?=\]$)", summary)
 
-  return code_match.group()
+  if code_match == None:
+      return None
+  else:
+      return code_match.group()
 
 def cal_event_to_assignment(event, account_id):
     return {
